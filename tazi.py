@@ -1,6 +1,7 @@
 import itertools
 from concurrent.futures import ThreadPoolExecutor
-from time import time
+import time
+from sqlalchemy import create_engine
 
 import pandas as pd
 import psycopg2
@@ -11,23 +12,23 @@ df = pd.read_csv('tazi-se-interview-project-data.csv', index_col=0)
 
 
 class PopulatePostgres:
-    def __init__(self, df):
+    engine = create_engine('postgresql://yusuf:yusuf123@localhost:5432/tazi_assignment')
+
+    def __init__(self, df, **kwargs):
         self.df = df
-        self.con = psycopg2.connect(host=5432, user='yusuf', password='yusuf123', dbname='tazi_assignment')
+        # self.con = psycopg2.connect(host="localhost", port=5432, user='yusuf', password='yusuf123', dbname='tazi_assignment')
+        super().__init__(**kwargs)
 
     def read_chunks(self):
-        time.sleep(2)
-        yield df.iloc[:100, :]
-
-    def populate_sql(self):
-        self.read_chunks().to_sql('tazi', self.con, if_exists='append')
+        yield df.iloc[:100, :].to_sql('tazi', self.engine, if_exists='append')
 
     def read_from_database(self):
         # Waiting for the database to populate for the initial confusion matrix calculation
-        time.sleep(20)
+        time.sleep(10)
 
-        self.df = pd.io.sql.read_sql('SELECT * FROM tazi', self.con)
+        self.df = pd.io.sql.read_sql('SELECT * FROM tazi', self.engine)
         return df
+
 
 class HasNextIterator:
     def __init__(self, it):
@@ -59,13 +60,14 @@ class HasNextIterator:
 
 class StreamingData:
     
-    def __init__(self, weights, chunk_size):
+    def __init__(self, weights, chunk_size, **kwargs):
         self.weights = weights
         self.chunk_size = chunk_size
 
-        self.con = psycopg2.connect(host=5432, user='yusuf', password='yusuf123', dbname='tazi_assignment')
-        self.df = PopulatePostgres().read_from_database()
+        # self.con = psycopg2.connect(host="localhost", port=5432, user='yusuf', password='yusuf123', dbname='tazi_assignment')
+        self.dataframe = PopulatePostgres(df).read_from_database()
         self.iterator = HasNextIterator(itertools.count(0))
+        super().__init__(**kwargs)
 
     @staticmethod
     def choose_a_or_b(row):
@@ -106,33 +108,29 @@ class StreamingData:
             confusion_matrix_dict[f'confusion_matrix_{a}'].loc['B', 'B'] = sum(
                 window_choice_b['choice'] == window_choice_b['given_label'])
 
-            confusion_matrix_dict[f'confusion_matrix_{a}'].to_sql(f'tazi_conf_matrix_{a}', self.con, if_exists='append')
+            confusion_matrix_dict[f'confusion_matrix_{a}'].to_sql(f'tazi_conf_matrix_{a}', self.engine, if_exists='append')
+            print(confusion_matrix_dict[f'confusion_matrix_{a}'])
+
+            time.sleep(10)
+            cur = self.con.cursor()
+            cur.execute(f'DROP TABLE tazi_conf_matrix_{a};')
         return confusion_matrix_dict
 
 
-    def clear_matrix_data(self):
-        while self.iterator.has_next():
-            a = self.iterator.next()
-            cur = self.con.cursor()
-            cur.execute(f'DROP TABLE tazi_conf_matrix_{a};')
-
-
 class SuperClass(PopulatePostgres, StreamingData):
-    pass
+    def __init__(self, weights, chunk_size, df):
+        super().__init__(weights=weights, chunk_size=chunk_size, df=df)
 
 
 def main1():
-    sc = SuperClass()
+    sc = SuperClass([0.3, 0.4, 0.3], 1000, df)
     sc.read_chunks()
-    sc.populate_sql()
     sc.read_from_database()
 
 
 def main2():
-    sc = SuperClass([0.3, 0.4, 0.3], 1000)
+    sc = SuperClass([0.3, 0.4, 0.3], 1000, df)
     sc.confusion_matrix()
-    time.sleep(10)
-    sc.clear_matrix_data()
 
 
 if __name__ == '__main__':
