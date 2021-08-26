@@ -4,15 +4,15 @@ import time
 from sqlalchemy import create_engine
 
 import pandas as pd
-import psycopg2
 import warnings
 warnings.filterwarnings("ignore")
 
 df = pd.read_csv('tazi-se-interview-project-data.csv', index_col=0)
+engine = create_engine('postgresql://yusuf:yusuf123@localhost:5432/tazi_assignment')
+engine.execute('CREATE TABLE IF NOT EXISTS tazi();')
 
 
 class PopulatePostgres:
-    engine = create_engine('postgresql://yusuf:yusuf123@localhost:5432/tazi_assignment')
 
     def __init__(self, df, **kwargs):
         self.df = df
@@ -20,13 +20,13 @@ class PopulatePostgres:
         super().__init__(**kwargs)
 
     def read_chunks(self):
-        yield df.iloc[:100, :].to_sql('tazi', self.engine, if_exists='append')
+        yield df.iloc[:100, :].to_sql('tazi', engine, if_exists='append')
 
     def read_from_database(self):
         # Waiting for the database to populate for the initial confusion matrix calculation
         time.sleep(10)
 
-        self.df = pd.io.sql.read_sql('SELECT * FROM tazi', self.engine)
+        self.df = pd.io.sql.read_sql('SELECT * FROM tazi', engine)
         return df
 
 
@@ -59,7 +59,7 @@ class HasNextIterator:
 
 
 class StreamingData:
-    
+
     def __init__(self, weights, chunk_size, **kwargs):
         self.weights = weights
         self.chunk_size = chunk_size
@@ -108,13 +108,23 @@ class StreamingData:
             confusion_matrix_dict[f'confusion_matrix_{a}'].loc['B', 'B'] = sum(
                 window_choice_b['choice'] == window_choice_b['given_label'])
 
-            confusion_matrix_dict[f'confusion_matrix_{a}'].to_sql(f'tazi_conf_matrix_{a}', self.engine, if_exists='append')
+            confusion_matrix_dict[f'confusion_matrix_{a}'].to_sql(f'tazi_conf_matrix_{a}', engine, if_exists='replace')
             print(confusion_matrix_dict[f'confusion_matrix_{a}'])
 
-            time.sleep(10)
-            cur = self.con.cursor()
-            cur.execute(f'DROP TABLE tazi_conf_matrix_{a};')
         return confusion_matrix_dict
+
+
+def clear_matrix_data():
+    print('1'+'\n')
+    iterator = iter(itertools.count(1))
+    loop_finished = False
+    while not loop_finished:
+        try:
+            item = next(iterator)
+            engine.execute(f'DROP TABLE tazi_conf_matrix_{item};')
+            time.sleep(3)
+        except StopIteration:
+            loop_finished = True
 
 
 class SuperClass(PopulatePostgres, StreamingData):
@@ -133,8 +143,13 @@ def main2():
     sc.confusion_matrix()
 
 
+def main3():
+    clear_matrix_data()
+
+
 if __name__ == '__main__':
     with ThreadPoolExecutor(max_workers=2) as executor:
-        executor.submit(main1())
-        executor.submit(main2())
+        executor.submit(main1)
+        executor.submit(main2)
+        executor.submit(main3)
 
