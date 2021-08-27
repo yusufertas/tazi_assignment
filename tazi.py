@@ -7,27 +7,28 @@ import pandas as pd
 import warnings
 warnings.filterwarnings("ignore")
 
-df = pd.read_csv('tazi-se-interview-project-data.csv', index_col=0)
+filename = 'tazi-se-interview-project-data.csv'
 engine = create_engine('postgresql://yusuf:yusuf123@localhost:5432/tazi_assignment')
-engine.execute('CREATE TABLE IF NOT EXISTS tazi();')
+engine.execute('CREATE TABLE IF NOT EXISTS tazi(id SERIAL PRIMARY KEY, given_label VARCHAR(1), "model1_A" NUMERIC, "model1_B" NUMERIC, "model2_A" NUMERIC, "model2_B" NUMERIC, "model3_A" NUMERIC, "model3_B" NUMERIC);')
 
 
 class PopulatePostgres:
 
-    def __init__(self, df, **kwargs):
-        self.df = df
-        # self.con = psycopg2.connect(host="localhost", port=5432, user='yusuf', password='yusuf123', dbname='tazi_assignment')
+    def __init__(self, **kwargs):
+        self.filename = filename
         super().__init__(**kwargs)
 
     def read_chunks(self):
-        yield df.iloc[:100, :].to_sql('tazi', engine, if_exists='append')
+        reader = pd.read_csv(self.filename, chunksize=100, index_col=0)
+        for chunk in reader:
+            time.sleep(1)
+            chunk.to_sql('tazi', engine, if_exists='append')
 
     def read_from_database(self):
         # Waiting for the database to populate for the initial confusion matrix calculation
         time.sleep(10)
-
-        self.df = pd.io.sql.read_sql('SELECT * FROM tazi', engine)
-        return df
+        dataframe = pd.io.sql.read_sql('SELECT * FROM tazi', engine)
+        return dataframe
 
 
 class HasNextIterator:
@@ -64,8 +65,7 @@ class StreamingData:
         self.weights = weights
         self.chunk_size = chunk_size
 
-        # self.con = psycopg2.connect(host="localhost", port=5432, user='yusuf', password='yusuf123', dbname='tazi_assignment')
-        self.dataframe = PopulatePostgres(df).read_from_database()
+        self.streaming_data = PopulatePostgres().read_from_database()
         self.iterator = HasNextIterator(itertools.count(0))
         super().__init__(**kwargs)
 
@@ -84,8 +84,7 @@ class StreamingData:
 
         while self.iterator.has_next():
             a = self.iterator.next()
-
-            window_dict[f'window_{a}'] = self.df.iloc[a-1:self.chunk_size+a-1, :]
+            window_dict[f'window_{a}'] = self.streaming_data.iloc[a-1:self.chunk_size+a-1, :]
             window = window_dict[f'window_{a}']
 
             window['agg_A'] = self.weights[0] * window['model1_A'] + self.weights[1] * window['model2_A'] + \
@@ -98,58 +97,52 @@ class StreamingData:
             window_choice_b = window[window['choice'] == 'B']
 
             confusion_matrix_dict[f'confusion_matrix_{a}'] = pd.DataFrame()
-
-            confusion_matrix_dict[f'confusion_matrix_{a}'].loc['A', 'A'] = sum(
-                window_choice_a['choice'] == window_choice_a['given_label'])
-            confusion_matrix_dict[f'confusion_matrix_{a}'].loc['A', 'B'] = sum(
-                window_choice_a['choice'] != window_choice_a['given_label'])
-            confusion_matrix_dict[f'confusion_matrix_{a}'].loc['B', 'A'] = sum(
-                window_choice_b['choice'] != window_choice_b['given_label'])
-            confusion_matrix_dict[f'confusion_matrix_{a}'].loc['B', 'B'] = sum(
-                window_choice_b['choice'] == window_choice_b['given_label'])
+            confusion_matrix_dict[f'confusion_matrix_{a}'].loc['A', 'A'] = len(window_choice_a[window_choice_a['given_label']=='A'])
+            confusion_matrix_dict[f'confusion_matrix_{a}'].loc['A', 'B'] = len(window_choice_a[window_choice_a['given_label']=='B'])
+            confusion_matrix_dict[f'confusion_matrix_{a}'].loc['B', 'A'] = len(window_choice_b[window_choice_b['given_label']=='A'])
+            confusion_matrix_dict[f'confusion_matrix_{a}'].loc['B', 'B'] = len(window_choice_b[window_choice_b['given_label']=='B'])
 
             confusion_matrix_dict[f'confusion_matrix_{a}'].to_sql(f'tazi_conf_matrix_{a}', engine, if_exists='replace')
-            print(confusion_matrix_dict[f'confusion_matrix_{a}'])
+            # print(confusion_matrix_dict[f'confusion_matrix_{a}'])
 
         return confusion_matrix_dict
 
 
-def clear_matrix_data():
-    print('1'+'\n')
-    iterator = iter(itertools.count(1))
-    loop_finished = False
-    while not loop_finished:
-        try:
-            item = next(iterator)
-            engine.execute(f'DROP TABLE tazi_conf_matrix_{item};')
-            time.sleep(3)
-        except StopIteration:
-            loop_finished = True
+    def clear_matrix_data(self):
+        iterator = iter(itertools.count(1))
+        loop_finished = False
+        while not loop_finished:
+            try:
+                item = next(iterator)
+                time.sleep(5)
+                engine.execute(f'DROP TABLE tazi_conf_matrix_{item};')
+            except StopIteration:
+                loop_finished = True
 
 
 class SuperClass(PopulatePostgres, StreamingData):
-    def __init__(self, weights, chunk_size, df):
-        super().__init__(weights=weights, chunk_size=chunk_size, df=df)
+    def __init__(self, weights, chunk_size):
+        super().__init__(weights=weights, chunk_size=chunk_size)
+
+
+sc = SuperClass([0.1, 0.8, 0.1], 1000)
 
 
 def main1():
-    sc = SuperClass([0.3, 0.4, 0.3], 1000, df)
     sc.read_chunks()
     sc.read_from_database()
 
 
 def main2():
-    sc = SuperClass([0.3, 0.4, 0.3], 1000, df)
     sc.confusion_matrix()
 
 
 def main3():
-    clear_matrix_data()
+    sc.clear_matrix_data()
 
 
 if __name__ == '__main__':
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    with ThreadPoolExecutor(max_workers=3) as executor:
         executor.submit(main1)
         executor.submit(main2)
         executor.submit(main3)
-
